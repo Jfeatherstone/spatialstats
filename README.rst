@@ -1,5 +1,5 @@
-powerlaw: A Python Package for Analysis of Heavy-Tailed Distributions
-=====================================================================
+Spatial point statistics
+========================
 
 .. image:: https://github.com/jfeatherstone/spatialstats/workflows/Tests/badge.svg
    :target: https://github.com/jfeatherstone/spatialstats/actions
