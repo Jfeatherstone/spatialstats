@@ -9,8 +9,7 @@ Spatial point statistics implemented in Python.
 
 Basic Usage
 ------------
-The most basic use of this library is to fit some data, extract parameters,
-and make comparisons to other distributions:
+...
 
 Installation
 ------------
@@ -18,8 +17,8 @@ You can install directly from the source:
 
 .. code-block:: console
 
-    $ git clone https://github.com/jeffalstott/powerlaw
-    $ cd powerlaw
+    $ git clone https://github.com/jfeatherstone/spatialstats
+    $ cd spatialstats
     $ pip install .
 
 Development
