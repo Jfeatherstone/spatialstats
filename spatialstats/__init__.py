@@ -1,5 +1,8 @@
 from .correlation import *
 from .generate import *
+from .plotting import *
+from .density import *
+from .fitting import *
 
 try:
     from ._version import __version__
