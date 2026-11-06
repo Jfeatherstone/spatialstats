@@ -10,7 +10,8 @@ Two-dimensional spatial point statistics implemented in Python.
 Analysis Usage
 --------------
 
-```
+.. code-block:: python
+
     import spatialstats as ss
 
     # Some 2D point data
@@ -23,12 +24,12 @@ Analysis Usage
     k_arr, k_bin_arr = ss.ripley_k(data)
 
     ...
-```
 
 Generation Usage
 ----------------
 
-```
+.. code-block:: python
+
     import spatialstats as ss
     from shapely.geometry import Polygon
 
@@ -48,7 +49,6 @@ Generation Usage
     points = ss.generate_cluster(parent_mean=5, child_mean=5, region=region, soft_diameter=0.1)
 
     ...
-```
 
 Installation
 ------------
@@ -56,9 +56,9 @@ You can install directly from the source:
 
 .. code-block:: console
 
-    $ git clone https://github.com/jfeatherstone/spatialstats
-    $ cd spatialstats
-    $ pip install .
+    git clone https://github.com/jfeatherstone/spatialstats
+    cd spatialstats
+    pip install .
 
 Development
 -----------

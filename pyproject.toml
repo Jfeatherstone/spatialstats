@@ -30,6 +30,8 @@ dependencies = [
     "scipy",
     "numpy",
     "matplotlib",
+    "shapely",
+    "dill",
 ]
 
 [project.optional-dependencies]
@@ -40,7 +42,7 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "http://www.github.com/jfeatherstone/powerlaw"
+Homepage = "http://www.github.com/jfeatherstone/spatialstats"
 
 [tool.setuptools]
 py-modules = ["spatialstats"]
