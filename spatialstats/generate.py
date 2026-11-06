@@ -134,7 +134,7 @@ def generate_tri_lattice(N,
     return points
 
 
-def generate_poisson(N, d=2, region=None, diameter=None, density=None):
+def generate_poisson(N, d=2, region=None, diameter=None, soft_diameter=None, density=None, verbose=1):
     """
     Generate a set of points distributed independently of each other.
 
@@ -185,6 +185,9 @@ def generate_poisson(N, d=2, region=None, diameter=None, density=None):
         The density field for the process if point generation is to be
         inhomogeneous. Should be given as a tuple including the multidimensional
         histogram values, and an array giving the bin centers for each axis.
+
+    verbose : int, optional
+        The level of verbosity for status messages and warnings.
 
 
     Returns
@@ -315,8 +318,9 @@ def generate_poisson(N, d=2, region=None, diameter=None, density=None):
             raise ValueError(f"Total area of points ({occupied_volume}) would exceed available space in region ({np.prod(axis_sizes)}).")
 
         # Print a warning if you are close, just in case
-        if occupied_volume >= np.prod(axis_sizes) * 0.1:
-            warnings.warn('Occupied volume of points is a macroscopic fraction of full space, generation might fail.')
+        if verbose > 0:
+            if occupied_volume >= np.prod(axis_sizes) * 0.1:
+                warnings.warn('Occupied volume of points is a macroscopic fraction of full space, generation might fail.')
 
     # We build this list iteratively.
     points = []
@@ -391,9 +395,30 @@ def generate_poisson(N, d=2, region=None, diameter=None, density=None):
                 if len(neighbors) > 0:
                     bad_indices += [len(points) + j]
 
-
-            # Remove all of the bad points
+            # Remove all of the bad points from hard core exclusion
             new_points = np.array([new_points[j] for j in range(len(new_points)) if not (len(points) + j) in bad_indices])
+
+            # If we have a soft diameter, we calculate the probability of
+            # keeping each new point. Note that we do this one by one,
+            # since adding multiple at a time could complicate things.
+            if soft_diameter is not None:
+                # We'll use a kdtree to make sure that the points aren't too close to
+                # each other.
+                kdtree = KDTree(points + list(new_points))
+
+                for j in range(len(new_points)):
+                    # Find the closest points. We take more than 1, since
+                    # the closest ones might have already been removed.
+                    # 10 seems like a reasonable amount.
+                    dist, ind = kdtree.query(new_points[i], 10)
+                    
+                    probability_reduction = np.exp(-dist/soft_diameter)
+
+                    # If we draw a uniform random number below that probability
+                    # reduction, reroll the new point.
+                    if np.random.uniform(0, 1) < probability_reduction:
+                        continue
+
 
         # Add the new points to the running list
         points += list(new_points)

@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from .generate import generate_cluster
 from .correlation import pair_correlation
 
-def fit_cluster_process(data, initial_guess={}, parent_process='poisson', child_process='gaussian', region=None, homogeneous=True, use_hard_diameter=False, use_soft_diameter=False, generation_order='parent', debug=False):
+def fit_cluster_process(data, initial_guess={}, parent_process='poisson', child_process='gaussian', region=None, homogeneous=True, use_hard_diameter=False, use_soft_diameter=False, generation_order='parent', debug=False, num_processes=1):
     """
     """
 
@@ -99,7 +99,7 @@ def fit_cluster_process(data, initial_guess={}, parent_process='poisson', child_
         for i in range(n_sim):
             cluster_data = [generate_cluster(parent_mean=parent_mean, child_mean=child_mean, diameter=diameter, soft_diameter=soft_diameter, child_process_scale=child_process_scale, region=region) for _ in data]
 
-            g_arr, bin_arr = pair_correlation(cluster_data, bins=bins, boundary=region)
+            g_arr, bin_arr = pair_correlation(cluster_data, bins=bins, boundary=region, processes=num_processes)
             sim_g_arr[i] = g_arr
 
         mean_fit_g_arr = np.mean(sim_g_arr, axis=0)

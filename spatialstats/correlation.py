@@ -6,8 +6,16 @@ from shapely.affinity import translate
 import time
 
 import warnings
+import itertools
 
 import multiprocessing
+import dill
+
+# This overwrites multiprocessing's internal pickling with dill, which
+# allows us to use local functions in parallelization.
+dill.Pickler.dumps, dill.Pickler.loads = dill.dumps, dill.loads
+multiprocessing.reduction.ForkingPickler = dill.Pickler
+multiprocessing.reduction.dump = dill.dump
 
 def morisita_index(points,
                    region=None,
@@ -203,10 +211,15 @@ def quadrat_iod(points,
     return divisions_arr**d, index_arr
 
 
-def pair_correlation(points, bins=20, boundary=None, boundary_holes=None, debug=False, plot=False, processes=1):
+def pair_correlation(points, bins=20, boundary=None, boundary_holes=None, kernel='epanechnikov', c=0.1, divisor='d', verbose=1, plot=False, processes=1):
     r"""
     Computes the 2D radial distribution function (pair correlation function) 
-    g(r) for a set of points, corrected to take account of the boundary effects.
+    :math:``g(r)`` for a set of points, corrected to take account of the boundary
+    effects.
+
+    ``points`` can either be a single set of points, or can be multiple
+    disjoints sets whose data will be pooled to compute the pair correlation
+    function.
    
     The implementation is based on that of Antoine Bérut
     (https://github.com/aberut/paircorrelation2d) but modified to be able
@@ -263,11 +276,38 @@ def pair_correlation(points, bins=20, boundary=None, boundary_holes=None, debug=
         
         If no value is provided, the area of intereste will be a simple
         polygon with no hole.
-        
-    debug : bool, optional
-        If True, the code will print outputs showing timings at different
-        stages of the computation (to let one know what operations are the
-        most time consuming).
+
+    kernel : {'epanechnikov'} or None, optional
+        The kernel to use in computing the pair correlation function.
+
+        ``'epanechnikov'`` will use:
+
+            k(x,w) = 3/(4w) max(1 - x^2 / w^2, 0)
+
+        ``None`` will use no kernel, ie. just a value of 1 if the distance
+        falls within the bin, and 0 otherwise.
+
+    c : float, optional
+        The Epanechnikov half width parameter. Recommended to have values
+        between 0.1 and 0.2.
+
+    divisor : {'d', 'r'}, optional
+        What to divide the contributions to the g function by.
+
+        ``'d'`` will use the actual distance of a given point, which usually
+        gives better performance for small distance values (see Baddely et
+        al., pg. 229).
+
+        ``'r'`` will use the distance to the center of the bin.
+       
+    verbose : int, optional
+        The level of verbosing when computing the pair correlation function.
+
+        ``0`` means no messages or warnings.
+
+        ``1`` means only warnings.
+
+        ``2`` means warnings and timing information.
 
     plot : bool, optional
         If True, shows the points that were kept, and the computed g(r). 
@@ -293,7 +333,7 @@ def pair_correlation(points, bins=20, boundary=None, boundary_holes=None, debug=
     """    
 
     # If you want to calculate the time taken, you can do that.
-    if debug:
+    if verbose > 1:
         t0 = time.time()
  
     # We first want to parse our points, since we might have multiple sets
@@ -365,11 +405,17 @@ def pair_correlation(points, bins=20, boundary=None, boundary_holes=None, debug=
         cropped_point_sets = point_sets
 
     # If there are any that no longer have any points, give a warning.
+    bad_indices = []
     for i in range(len(cropped_point_sets)):
-        if len(cropped_point_sets[i]) == 0:
-            warnings.warn(f'Set with index {i} has no points inside the specified boundary.')
+        if len(cropped_point_sets[i]) <= 1:
+            if verbose > 0:
+                warnings.warn(f'Set with index {i} has one or no points inside the specified boundary.')
 
-    # Final setup thing: parse the bins value if need.
+            bad_indices.append(i)
+
+    cropped_point_sets = [cropped_point_sets[i] for i in range(len(cropped_point_sets)) if i not in bad_indices]
+
+    # Parse the bins value if need.
 
     # If we are given an integer, compute the max distance either using the
     # size of the boundary, or between any two points in the same set if
@@ -397,7 +443,52 @@ def pair_correlation(points, bins=20, boundary=None, boundary_holes=None, debug=
     # at the end.
     bin_centers = (bin_edges[1:] + bin_edges[:-1]) / 2
 
-    if debug:
+    # Parse the kernel function
+    if kernel is not None:
+        if kernel.lower() == 'epanechnikov':
+            # This uses the average density of each individual point pattern,
+            # not the total density. I think this makes sense to me.
+            kernel_width = np.sqrt(5) * c / np.sqrt(len(all_points) / len(cropped_point_sets) / area)
+            def kernel_func(x):
+                return 3 / (4 * kernel_width) * max(0, 1 - x**2 / kernel_width**2)
+
+            kernel_func = np.vectorize(kernel_func)
+            
+            # Compute the normalization correction if our kernel width is
+            # greater than the half bin size and we start with our first
+            # bin edge at 0. The idea is that in this case, that first bin
+            # will be have a smaller domain of contributions from the kernel
+            # function since part of its domain will be negative. I think it
+            # makes sense to correct for the amount of the domain you are
+            # missing.
+            # NOTE: Probably very important to mention that I have never
+            # seen this in any literature, so maybe this approach is totally
+            # incorrect, though it seems reasonable to me.
+
+            # Integrate the kernel over its entire domain
+            kernel_normalization_const = np.sum(kernel_func(np.linspace(-kernel_width, kernel_width, 100))) * (2 * kernel_width / 100)
+
+            kernel_normalization_arr = np.ones(len(bin_centers))
+
+            # If the first bin is zero and the kernel is larger than half the
+            # bin size, we should correct for the amount of the domain that
+            # isn't accessible to the first bin because it extends into the
+            # negative axis.
+            for i in range(len(bin_centers)):
+                if bin_centers[i] - kernel_width < 0:
+                    missing_portion = kernel_width - bin_centers[i]
+                    bin_normalization_const = np.sum(kernel_func(np.linspace(-kernel_width + missing_portion, kernel_width, 100))) * ((2 * kernel_width - missing_portion) / 100)
+
+                    kernel_normalization_arr[i] = bin_normalization_const / kernel_normalization_const
+
+                else:
+                    break
+
+        else:
+
+            raise ValueError(f'Invalid kernel function passed: {kernel}')
+
+    if verbose > 1:
         t1 = time.time() - t0
         print(f'Creating boundary polygon and sets of points inside took {t1:.3}s')
    
@@ -434,7 +525,7 @@ def pair_correlation(points, bins=20, boundary=None, boundary_holes=None, debug=
        
         disk_areas[i] = np.pi * ((bin_centers[i] + ring_half_width)**2 - (bin_centers[i] - ring_half_width)**2)
 
-    if debug:
+    if verbose > 1:
         t2 = time.time() - t0
         print(f'Creating all ring polygons took {t2 - t1:.3}s')
    
@@ -445,50 +536,11 @@ def pair_correlation(points, bins=20, boundary=None, boundary_holes=None, debug=
     #(the area of "the intersection of the ring and the area of interest", divided by the ring area)
     normalization = [np.ones((len(p_set), len(bin_edges) - 1)) for p_set in cropped_point_sets]
 
-    
-    # 
-    #lock = multiprocessing.Lock()
-
     if boundary_polygon is not None:
-        # I thought this fast method would actually help but it turns out that
-        # it is much worse that the regular one haha. So I'll leave it in
-        # case it ends up being useful for something, but definitely don't
-        # use it by default.
-        fast = False
-        if fast:
-            # For the fast method, we aren't going to compute proper intersections
-            # of the rings with the boundary, but instead just see how many equally
-            # spaced points around the boundary sit inside the boundary, and use
-            # that as a proxy for the total length of circumference inside.
-            discrete_steps = 30
 
-            angle_steps = np.linspace(0, 2*np.pi, discrete_steps+1)[:-1]
-
-            unit_circle_points = np.array([np.sin(angle_steps), np.cos(angle_steps)]).T
-
-            for i in range(len(cropped_point_sets)):
-                for j in range(len(cropped_point_sets[i])):
-                    for k in range(len(bin_centers)):
-                        test_points = unit_circle_points*bin_centers[k] + cropped_point_sets[i][j]
-                        normalization[i][j,k] = len(np.where([boundary_polygon.contains(Point(p)) for p in test_points])[0]) / discrete_steps
-            
-        else:
-            # For each distance bin, define the ring (difference between the disk
-            # of radius r[i+1] and the disk of radius r[i]) and computes the area of
-            # those rings.
-
-            #rings = [None]*(len(bin_edges) - 1)
-            #ring_areas = np.zeros(len(bin_edges) - 1)
-
-            # For each distance bin, define the ring (difference between the disk
-            # of radius r[i+1] and the disk of radius r[i]) and computes the area of
-            # those rings.
-            #for k in range(len(bin_edges)-1):
-            #    inner_circle = Point([0,0]).buffer(bin_edges[k])
-            #    outer_circle = Point([0,0]).buffer(bin_edges[k+1])
-
-            #    rings[k] = outer_circle.difference(inner_circle)
-            #    ring_areas[k] = rings[k].area
+        # If we use just a single process, we just run through the nested
+        # for loops naively.
+        if processes is None or processes == 1:
           
             # Now we will translate each of those rings to each point and compute
             # how the ring intersects with the boundary.
@@ -504,7 +556,41 @@ def pair_correlation(points, bins=20, boundary=None, boundary_holes=None, debug=
                         # then divide by the true circumference to get the fraction.
                         normalization[i][j,k] = boundary_polygon.intersection(translated_ring).area / (2 * ring_half_width) / (2 * np.pi * bin_centers[k])
 
-    if debug:
+        elif processes > 1 or processes < 0:
+
+            # Parse the number of processes
+            num_processes = processes if processes > 0 else multiprocessing.cpu_count() + processes
+            assert num_processes > 0, f'Invalid number of processes specified ({processes}); only {multiprocessing.cpu_count()} are available.'
+
+            lock = multiprocessing.Lock()
+
+            def process_func(i):
+                norm_values = np.zeros((len(cropped_point_sets[i]), len(bin_centers)))
+                # We still loop over the bins in each process, since otherwise
+                # the time spent on creating and stopping processes would
+                # far outweigh the benefit of parallelizing.
+                for j in range(len(norm_values)):
+                    for k in range(len(bin_centers)):
+                        translated_ring = translate(rings[k], xoff=cropped_point_sets[i][j,0], yoff=cropped_point_sets[i][j,1])
+                        # First divide the area by (2 dr) to approximate the circumference,
+                        # then divide by the true circumference to get the fraction.
+                        norm_values[j,k] = boundary_polygon.intersection(translated_ring).area / (2 * ring_half_width) / (2 * np.pi * bin_centers[k])
+
+                return i, norm_values
+
+            # If we are parallelizing, we first need to generate the list of
+            # jobs, and then we can assign them to a pool.
+            job_list = np.arange(len(cropped_point_sets))
+            
+            with multiprocessing.Pool(processes=num_processes) as pool:
+                for result in pool.imap_unordered(process_func, job_list):
+                    i, val = result
+                    lock.acquire()
+                    normalization[i] = val
+                    lock.release()
+
+
+    if verbose > 1:
         t3 = time.time() - t0
         print(f'Computing normalization factors took {t3 - t2:.3}s')
     
@@ -521,15 +607,37 @@ def pair_correlation(points, bins=20, boundary=None, boundary_holes=None, debug=
             # Remove the self distance
             distances = distances[distances > 0]
 
-            # Compute the histogram
-            hist = np.histogram(distances, bins=bin_edges)[0]
+            if kernel is None:
+                if divisor == 'd':
+                    # Compute the histogram
+                    hist = np.histogram(distances, bins=bin_edges, weights=1/distances)[0]
 
-            # Normalize, and add to the running array
-            # The normalization constant involves the ring areas (which is
-            # needed to be consistent as a function of r) and the boundary term
-            g_arr_normalized += hist / (disk_areas * normalization[i][j])
+                    # Normalize, and add to the running array
+                    # The normalization constant involves the ring areas (which is
+                    # needed to be consistent as a function of r) and the boundary term
+                    g_arr_normalized += hist / (2 * np.pi * normalization[i][j])
+
+                elif divisor == 'r':
+                    # Compute the histogram
+                    hist = np.histogram(distances, bins=bin_edges)[0]
+
+                    # Normalize, and add to the running array
+                    # The normalization constant involves the ring areas (which is
+                    # needed to be consistent as a function of r) and the boundary term
+                    g_arr_normalized += hist / (2 * np.pi * bin_centers * normalization[i][j])
+
+            else:
+                # If we have a kernel, we need to go through each bin
+                for k in range(len(bin_centers)):
+                    separations = distances - bin_centers[k]
+
+                    if divisor == 'r':
+                        g_arr_normalized[k] += np.sum(kernel_func(separations)) / (2 * np.pi * bin_centers[k] * normalization[i][j,k]) / kernel_normalization_arr[k]
+
+                    elif divisor == 'd':
+                        g_arr_normalized[k] += np.sum(kernel_func(separations) / (2 * np.pi * distances)) / normalization[i][j,k] / kernel_normalization_arr[k]
             
-    if debug:
+    if verbose > 1:
         t4 = time.time() - t0
         print(f'Computing g(r) took {t4 - t3:.3} s')
 
@@ -559,14 +667,14 @@ def pair_correlation(points, bins=20, boundary=None, boundary_holes=None, debug=
         plt.title('Radial distribution function')
         plt.show()
     
-    if debug:
+    if verbose > 1:
         t5 = time.time() - t0
         print(f'Total time: {t5}s for {len(all_points)} points ')
     
     return g_arr_normalized, bin_centers
 
 
-def ripley_k(points, bins=20, boundary=None, boundary_holes=None, linearize=False, debug=False, plot=False):
+def ripley_k(points, bins=20, boundary=None, boundary_holes=None, linearize=False, verbose=1, plot=False):
     r"""
     Computes the 2D Ripley's K function (integral of the pair correlation function) 
     K(r) for a set of points, corrected to take account of the boundary effects.
@@ -633,10 +741,14 @@ def ripley_k(points, bins=20, boundary=None, boundary_holes=None, linearize=Fals
         This makes it helpful to compare with Poisson data, which will appear
         as a straight line with slope 1, ie. y=x.
         
-    debug : bool, optional
-        If True, the code will print outputs showing timings at different
-        stages of the computation (to let one know what operations are the
-        most time consuming).
+    verbose : int, optional
+        The level of verbosing when computing the k function.
+
+        ``0`` means no messages or warnings.
+
+        ``1`` means only warnings.
+
+        ``2`` means warnings and timing information.
 
     plot : bool, optional
         If True, shows the points that were kept, and the computed g(r). 
@@ -655,7 +767,7 @@ def ripley_k(points, bins=20, boundary=None, boundary_holes=None, linearize=Fals
     # All of the setup for this method is always exactly the same as for
     # the pair correlation function above.
     # If you want to calculate the time taken, you can do that.
-    if debug:
+    if verbose > 1:
         t0 = time.time()
  
     # We first want to parse our points, since we might have multiple sets
@@ -746,7 +858,7 @@ def ripley_k(points, bins=20, boundary=None, boundary_holes=None, linearize=Fals
     else:
         raise ValueError(f'Invalid bins provided ({bins}); should be an array or integer.')
 
-    if debug:
+    if verbose > 1:
         t1 = time.time() - t0
         print(f'Creating boundary polygon and sets of points inside took {t1:.3}s')
    
@@ -787,7 +899,7 @@ def ripley_k(points, bins=20, boundary=None, boundary_holes=None, linearize=Fals
        
         disk_areas[i] = np.pi * bin_edges[i]**2
 
-    if debug:
+    if verbose > 1:
         t2 = time.time() - t0
         print(f'Creating all circle polygons took {t2 - t1:.3}s')
    
@@ -812,7 +924,7 @@ def ripley_k(points, bins=20, boundary=None, boundary_holes=None, linearize=Fals
                 # then divide by the true circumference to get the fraction.
                 normalization[i][j,l] = boundary_polygon.intersection(translated_ring).area / (2 * ring_half_width) / (2 * np.pi * bin_edges[l])
 
-    if debug:
+    if verbose > 1:
         t3 = time.time() - t0
         print(f'Computing normalization factors took {t3 - t2:.3}s')
     
@@ -843,7 +955,7 @@ def ripley_k(points, bins=20, boundary=None, boundary_holes=None, linearize=Fals
                 # Divide by the normalization
                 k_arr_normalized[l] += k_val / (normalization[i][j,l])
 
-    if debug:
+    if verbose > 1:
         t4 = time.time() - t0
         print(f'Computing g(r) took {t4 - t3:.3} s')
   
@@ -873,9 +985,10 @@ def ripley_k(points, bins=20, boundary=None, boundary_holes=None, linearize=Fals
             plt.title('Ripley\'s $K/\\pi r$')
         else:
             plt.title('Ripley\'s $K$')
+
         plt.show()
     
-    if debug:
+    if verbose > 1:
         t5 = time.time() - t0
         print(f'Total time: {t5}s for {len(all_points)} points ')
     
