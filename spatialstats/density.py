@@ -151,13 +151,13 @@ def density_field(points,
     bin_edges = [occupied_volume_bounds[i,0] + spacing * np.arange(true_field_dims[i] + 1) for i in range(dim)]
     # These are the centers of each bin, ie. the coordinates that we will
     # associated with the value at each lattice point.
-    axes = ((b[1:] + b[:-1]) / 2 for b in bin_edges)
+    axes = [(b[1:] + b[:-1]) / 2 for b in bin_edges]
 
     # Calculate which lattice cell each scatter point falls into
     lattice_positions = np.floor((points - occupied_volume_bounds[:,0]) / spacing).astype(np.int64)
 
     # Find all points that are in the relevant region
-    in_bounds = np.array([(lattice_positions[:,i] > 0) & (lattice_positions[:,i] < true_field_dims[i]) for i in range(dim)]).T
+    in_bounds = np.array([(lattice_positions[:,i] >= 0) & (lattice_positions[:,i] < true_field_dims[i]) for i in range(dim)]).T
     good_indices = np.where([ib.all() for ib in in_bounds])[0]
 
     # Check if an array of values was passed for each point

@@ -11,7 +11,7 @@ np.random.seed(0)
 
 class TestMorisita(unittest.TestCase):
 
-    def test_independent_2d(self):
+    def test_poisson_2d(self):
         """
         Calculate the morisita index for independently sampled 2d points, and
         check that the value is close to 1.
@@ -19,21 +19,21 @@ class TestMorisita(unittest.TestCase):
 
         N = 100**2
         d = 2
-        points = ss.generate_independent(N, d)
+        points = ss.generate_poisson(N, d)
 
         m_arr, morisita_arr = ss.morisita_index(points)
 
         assert_allclose(morisita_arr, 1, rtol=1e-2, atol=1e-3)
 
-    def test_independent_3d(self):
+    def test_poisson_3d(self):
         """
         Calculate the morisita index for independently sampled 3d points, and
         check that the value is close to 1.
         """
 
-        N = 50**3
+        N = 20**3
         d = 3
-        points = ss.generate_independent(N, d)
+        points = ss.generate_poisson(N, d)
 
         m_arr, morisita_arr = ss.morisita_index(points)
 
@@ -54,10 +54,12 @@ class TestMorisita(unittest.TestCase):
 
         N = 100**2
         d = 2
-        points = ss.generate_independent(N, d)
+        points = ss.generate_poisson(N, d)
 
         m_arr, morisita_arr = ss.morisita_index(points)
+        print(len(m_arr))
         m_arr, iod_arr = ss.quadrat_iod(points)
+        print(len(m_arr))
 
         #calculated_iod_arr = m_arr / (N * (m_arr - 1)) * ((N - 1) * morisita_arr - (N/m_arr - 1))
         calculated_morisita_arr = 1 / (N - 1) * (iod_arr * (m_arr - 1) + N - m_arr)

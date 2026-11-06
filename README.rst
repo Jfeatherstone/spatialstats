@@ -10,6 +10,7 @@ Two-dimensional spatial point statistics implemented in Python.
 Analysis Usage
 --------------
 
+```
     import spatialstats as ss
 
     # Some 2D point data
@@ -22,10 +23,12 @@ Analysis Usage
     k_arr, k_bin_arr = ss.ripley_k(data)
 
     ...
+```
 
 Generation Usage
 ----------------
 
+```
     import spatialstats as ss
     from shapely.geometry import Polygon
 
@@ -45,6 +48,7 @@ Generation Usage
     points = ss.generate_cluster(parent_mean=5, child_mean=5, region=region, soft_diameter=0.1)
 
     ...
+```
 
 Installation
 ------------

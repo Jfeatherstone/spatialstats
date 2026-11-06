@@ -170,7 +170,7 @@ def quadrat_iod(points,
         bounds = np.array(region)
 
     # The number of subdivisions of the space
-    divisions_arr = np.arange(2, max_divisions)
+    divisions_arr = np.arange(2, max_divisions+2)
     index_arr = np.zeros(len(divisions_arr))
 
     # Transform the points such that one corner of the space is at the origin.
