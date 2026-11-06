@@ -22,7 +22,7 @@ setuptools.setup(
     author='Jack Featherstone',
     author_email='jack.featherstone@proton.me',
     url='http://www.github.com/jfeatherstone/spatialstats',
-    install_requires=['scipy', 'numpy', 'matplotlib'],
+    install_requires=['scipy', 'numpy', 'matplotlib', 'shapely', 'dill'],
     license='MIT',
     classifiers=[
         'License :: OSI Approved :: MIT License',
