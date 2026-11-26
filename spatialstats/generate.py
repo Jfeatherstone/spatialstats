@@ -1,7 +1,7 @@
 import numpy as np
 
 import warnings
-from scipy.special import gamma
+from scipy.special import gamma as gamma_func
 from scipy.spatial import KDTree
 from scipy.optimize import bisect
 
@@ -134,7 +134,7 @@ def generate_tri_lattice(N,
     return points
 
 
-def generate_poisson(N, d=2, region=None, diameter=None, soft_diameter=None, density=None, verbose=1):
+def generate_poisson(N, d=2, region=None, radius=None, gamma=0, density=None, verbose=1):
     """
     Generate a set of points distributed independently of each other.
 
@@ -166,10 +166,12 @@ def generate_poisson(N, d=2, region=None, diameter=None, soft_diameter=None, den
         If not provided, points will be generated in the unit hypercube of
         dimension given by ``d``, ie. between [0, 1] for each coordinate.
 
-    diameter : float
-        The diameter of the points; the resulting set of points will be
-        generated such that no two points are closer together than this
-        distance, given in the same units as the region.
+    radius : float, optional
+        The radius of the points for exclusion processes; if provided, the
+        points will follow a Strauss-like process with this value as the
+        interaction radius, and ``gamma`` as the interaction strength.
+
+        By default, no exclusion will be used.
 
         It can be difficult to generate points that encompass a large
         fraction of the space; this function will iteratively add independently-
@@ -180,6 +182,18 @@ def generate_poisson(N, d=2, region=None, diameter=None, soft_diameter=None, den
         a set of correlated points, even if the initial positions are chosen
         independently (since you're rejecting the independent points based
         on radial distances).
+
+    gamma: float in range [0, 1], optional
+        The interaction strength for the Strauss-like exclusion process.
+        Points are generated sequentially; when a new point is to be added,
+        if there are :math:`N` points within closer than ``radius``, the probability
+        of this point being added will be :math:`gamma^N`.
+
+        ``gamma=1`` will give a normal Poisson process with no interaction.
+
+        ``gamma=0`` will give a hard core Poisson process.
+
+        Only has an effect if a value is provided for ``radius``.
 
     density : (numpy.ndarray[m,n,...], (numpy.ndarray[m], numpy.ndarray[n], ...)), optional
         The density field for the process if point generation is to be
@@ -311,8 +325,8 @@ def generate_poisson(N, d=2, region=None, diameter=None, soft_diameter=None, den
     axis_sizes = region[:,1] - region[:,0]
 
     # Make sure it seems possible to fit this many points in the area
-    if diameter is not None:
-        occupied_volume = np.pi**(d/2) / gamma(d/2 + 1) * (diameter/2)**d * N
+    if radius is not None:
+        occupied_volume = np.pi**(d/2) / gamma_func(d/2 + 1) * (radius)**d * N
 
         if occupied_volume >= np.prod(axis_sizes):
             raise ValueError(f"Total area of points ({occupied_volume}) would exceed available space in region ({np.prod(axis_sizes)}).")
@@ -366,14 +380,14 @@ def generate_poisson(N, d=2, region=None, diameter=None, soft_diameter=None, den
             new_points = np.array([p for p in new_points if inner_region.contains(Point(p))])
 
         # Check the exclusion condition if necessary
-        if diameter is not None:
+        if radius is not None and gamma < 1:
 
             # We'll use a kdtree to make sure that the points aren't too close to
             # each other.
             kdtree = KDTree(points + list(new_points))
 
             # Find all points within the twice the exclusion distance for each point.
-            nearby_indices = kdtree.query_ball_tree(kdtree, diameter)
+            nearby_indices = kdtree.query_ball_tree(kdtree, radius)
 
             # Now we run through all of the points and figure out which ones
             # are bad. Note that we might mark new point i as bad, which would
@@ -393,32 +407,15 @@ def generate_poisson(N, d=2, region=None, diameter=None, soft_diameter=None, den
                 neighbors = [n for n in neighbors if (n not in bad_indices) and (n != (len(points) + j))]
 
                 if len(neighbors) > 0:
-                    bad_indices += [len(points) + j]
+                    # we accept the point with probability gamma^n
+                    if np.random.uniform(0, 1) <= gamma**(len(neighbors)):
+                        pass
+                    else:
+                        # Otherwise, we remove this point
+                        bad_indices += [len(points) + j]
 
             # Remove all of the bad points from hard core exclusion
             new_points = np.array([new_points[j] for j in range(len(new_points)) if not (len(points) + j) in bad_indices])
-
-            # If we have a soft diameter, we calculate the probability of
-            # keeping each new point. Note that we do this one by one,
-            # since adding multiple at a time could complicate things.
-            if soft_diameter is not None:
-                # We'll use a kdtree to make sure that the points aren't too close to
-                # each other.
-                kdtree = KDTree(points + list(new_points))
-
-                for j in range(len(new_points)):
-                    # Find the closest points. We take more than 1, since
-                    # the closest ones might have already been removed.
-                    # 10 seems like a reasonable amount.
-                    dist, ind = kdtree.query(new_points[i], 10)
-                    
-                    probability_reduction = np.exp(-dist/soft_diameter)
-
-                    # If we draw a uniform random number below that probability
-                    # reduction, reroll the new point.
-                    if np.random.uniform(0, 1) < probability_reduction:
-                        continue
-
 
         # Add the new points to the running list
         points += list(new_points)
@@ -434,7 +431,7 @@ def generate_poisson(N, d=2, region=None, diameter=None, soft_diameter=None, den
     return points
 
 
-def generate_cluster(parent_mean=1, parent_process='poisson', parent_density=None, child_mean=1, child_process='gaussian', child_process_scale=1, region=None, diameter=None, soft_diameter=None, use_parent_buffer=True, generation_order='parent', debug=False):
+def generate_cluster(parent_mean=1, parent_process='poisson', parent_density=None, child_mean=1, child_process='gaussian', child_process_scale=1, region=None, radius=None, gamma=0, use_parent_buffer=True, generation_order='parent', verbose=1, plot=False, return_fig=False):
     """
     Generate a set of points through a Neyman-Scott Cox cluster process.
 
@@ -442,12 +439,13 @@ def generate_cluster(parent_mean=1, parent_process='poisson', parent_density=Non
     which are used as the centers around which 'child' points are generated.
     The set of all child points is the returned point pattern.
 
-    When given a value for ``diameter``, ie. an effective size of the
+    When given a value for ``radius``, ie. an effective size of the
     points with the constraint that they cannot overlap, selection is
-    done sequentially via rejection. Points are randomly generated within
-    the relevant region, and then if they do not overlap with the existing
-    points, they are kept. No spatial optimization/rejection is performed
-    to maximize the efficiency of generation.
+    done sequentially via rejection, ie. a random sequential absorption (RSA)
+    process. Points are randomly generated within the relevant region, and
+    then if they do not overlap with the existing points, they are kept. No
+    spatial optimization/rejection is performed to maximize the efficiency
+    of generation.
 
 
     Parameters
@@ -492,10 +490,12 @@ def generate_cluster(parent_mean=1, parent_process='poisson', parent_density=Non
         If not provided, points will be generated in the unit square ie. between
         [0, 1] for each coordinate.
 
-    diameter : float
-        The diameter of the points; the resulting set of points will be
-        generated such that no two points are closer together than this
-        distance, given in the same units as the region.
+    radius : float, optional
+        The radius of the points for exclusion processes; if provided, the
+        points will follow a Strauss-like process with this value as the
+        interaction radius, and ``gamma`` as the interaction strength.
+
+        By default, no exclusion will be used.
 
         It can be difficult to generate points that encompass a large
         fraction of the space; this function will iteratively add independently-
@@ -507,9 +507,21 @@ def generate_cluster(parent_mean=1, parent_process='poisson', parent_density=Non
         independently (since you're rejecting the independent points based
         on radial distances).
 
+    gamma: float in range [0, 1], optional
+        The interaction strength for the Strauss-like exclusion process.
+        Points are generated sequentially; when a new point is to be added,
+        if there are :math:`N` points within closer than ``radius``, the probability
+        of this point being added will be :math:`gamma^N`.
+
+        ``gamma=1`` will give a normal Poisson process with no interaction.
+
+        ``gamma=0`` will give a hard core Poisson process.
+
+        Only has an effect if a value is provided for ``radius``.
+
     generation_order : {'parent', 'child', 'random'}
         The order to generate the points in; only has an effect if a non-zero
-        value is given for ``diameter``.
+        value is given for ``radius``.
 
         'parent' means parent-by-parent: all of the children for a parent
         will be generated before moving onto the next parent.
@@ -685,7 +697,7 @@ def generate_cluster(parent_mean=1, parent_process='poisson', parent_density=Non
 
     # Generate the parent points
     if type(parent_process) is str and parent_process.lower() == 'poisson':
-        parent_points = generate_poisson(N=num_parent_points, d=d, region=parent_region_rect, diameter=None, density=parent_density)
+        parent_points = generate_poisson(N=num_parent_points, d=d, region=parent_region_rect, radius=None, density=parent_density)
 
     else:
         raise ValueError(f'Invalid parent process: {parent_process}.')
@@ -744,28 +756,24 @@ def generate_cluster(parent_mean=1, parent_process='poisson', parent_density=Non
             new_child = parent + offset
 
             # Check the exclusion condition if necessary
-            if (diameter is not None or soft_diameter is not None) and len(points) > 0:
+            if radius is not None and len(points) > 0 and gamma < 1:
 
                 # We'll use a kdtree to make sure that the points aren't too close to
                 # each other.
                 kdtree = KDTree(points)
 
                 # Find all points within the exclusion distance for each point.
-                nearby_indices = kdtree.query_ball_point(new_child, diameter)
+                nearby_indices = kdtree.query_ball_point(new_child, radius)
               
                 # If there is another nearby point, we try again.
-                if len(nearby_indices) > 0 and diameter is not None:
-                    continue
-
-                if soft_diameter is not None:
-                    # Find the closest point
-                    dist, ind = kdtree.query(new_child, 1)
+                if len(nearby_indices) > 0:
+                    # We accept the point with probability gamma^n
+                    # (accepting means doing nothing)
+                    if np.random.uniform(0, 1) < gamma**(len(nearby_indices)):
+                        pass
                     
-                    probability_reduction = np.exp(-dist/soft_diameter)
-
-                    # If we draw a uniform random number below that probability
-                    # reduction, reroll the new point.
-                    if np.random.uniform(0, 1) < probability_reduction:
+                    else:
+                        # If we reject the point, regenerate and try again
                         continue
 
             # If we properly found a new point, add it to the list and break
@@ -784,9 +792,9 @@ def generate_cluster(parent_mean=1, parent_process='poisson', parent_density=Non
 
     # If we have zero points, we should just reroll
     if len(points) == 0:
-        return generate_cluster(parent_mean, parent_process, parent_density, child_mean, child_process, child_process_scale, region, diameter, soft_diameter, use_parent_buffer, generation_order, debug)
+        return generate_cluster(parent_mean, parent_process, parent_density, child_mean, child_process, child_process_scale, region, radius, gamma, use_parent_buffer, generation_order, verbose, plot)
 
-    if debug:
+    if plot:
         plt.plot(*region_poly.exterior.xy, c='tab:orange', linewidth=1, alpha=0.7, label='True region')
         #plt.plot(*region_rect_poly.exterior.xy, c='tab:blue', linewidth=1, alpha=0.7, label='Rectangle region')
         plt.plot(*parent_region_rect_poly.exterior.xy, c='tab:blue', linewidth=1, alpha=0.7, label='Parent region')
@@ -802,7 +810,12 @@ def generate_cluster(parent_mean=1, parent_process='poisson', parent_density=Non
         plt.legend(fontsize=12)
         plt.xlabel('$x$')
         plt.ylabel('$y$')
-        plt.show()
+
+        if return_fig:
+            return points, plt.gcf()
+
+        else:
+            plt.show()
 
     return points
 
